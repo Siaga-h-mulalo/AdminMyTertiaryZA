@@ -2,12 +2,15 @@ import { auth, db } from "./firebase-config.js";
 import { onAuthStateChanged, signOut }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
-  collection, doc, getDoc, getDocs, addDoc, updateDoc, deleteDoc,
+  collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 let currentAdmin = null;
-let cache = { universities: [], colleges: [], courses: [], announcements: [], settings: {} };
+let cache = {
+  universities: [], colleges: [], courses: [], announcements: [],
+  settings: {}, settingsId: "global"
+};
 
 const $ = id => document.getElementById(id);
 const viewRoot = $("viewRoot");
@@ -48,6 +51,7 @@ async function load(name) {
   const snap = await getDocs(collection(db, name));
   return snap.docs.map(d => ({ _id: d.id, ...d.data() }));
 }
+
 async function refreshAll() {
   const [universities, colleges, courses, announcements, settingsArr] = await Promise.all([
     load("universities"), load("colleges"), load("courses"), load("announcements"), load("settings")
@@ -56,7 +60,14 @@ async function refreshAll() {
   cache.colleges      = colleges;
   cache.courses       = courses;
   cache.announcements = announcements;
-  cache.settings      = settingsArr[0] || {};
+
+  // Prefer the canonical "global" doc, otherwise fall back to whatever exists.
+  const settingsDoc =
+    settingsArr.find(s => s._id === "global" || s.docId === "global") ||
+    settingsArr[0] || null;
+
+  cache.settings   = settingsDoc ? { ...settingsDoc } : {};
+  cache.settingsId = settingsDoc ? settingsDoc._id : "global";
 }
 
 function toast(msg) {
@@ -469,32 +480,47 @@ function renderSettings() {
     <div class="card">
       <h3 style="margin-bottom:16px;"><i class="fas fa-sliders"></i> Global Website Settings</h3>
       <form id="settingsForm" class="form-grid">
-        <div class="field full"><label>Website Announcement</label><input name="websiteAnnouncement" value="${escapeAttr(s.websiteAnnouncement||"")}" /></div>
-        <div class="field full"><label>Homepage Featured Message</label><textarea name="homepageMessage">${escapeHTML(s.homepageMessage||"")}</textarea></div>
+        <div class="field full">
+          <label>Website Announcement</label>
+          <input name="websiteAnnouncement" value="${escapeAttr(s.websiteAnnouncement||"")}" />
+        </div>
+        <div class="field full">
+          <label>Homepage Featured Message</label>
+          <textarea name="homepageMessage">${escapeHTML(s.homepageMessage||"")}</textarea>
+        </div>
         <div class="field"><label>Contact Email</label><input name="contactEmail" value="${escapeAttr(s.contactEmail||"")}" /></div>
         <div class="field"><label>Current Application Cycle</label><input name="currentCycle" value="${escapeAttr(s.currentCycle||"")}" placeholder="e.g. 2027 Applications" /></div>
         <div class="field"><label>TikTok</label><input name="tiktok" value="${escapeAttr(s.tiktok||"")}" /></div>
         <div class="field"><label>Instagram</label><input name="instagram" value="${escapeAttr(s.instagram||"")}" /></div>
         <div class="field"><label>Facebook</label><input name="facebook" value="${escapeAttr(s.facebook||"")}" /></div>
         <div class="field"><label>X / Twitter</label><input name="twitter" value="${escapeAttr(s.twitter||"")}" /></div>
-        <div class="field full"><label>Important Notice</label><textarea name="importantNotice">${escapeHTML(s.importantNotice||"")}</textarea></div>
+        <div class="field full">
+          <label>Important Notice</label>
+          <textarea name="importantNotice"
+            placeholder="Type the notice shown on the public site…">${escapeHTML(s.importantNotice||"")}</textarea>
+          <div class="hint">Editable — clear the text and save to remove the notice entirely.</div>
+        </div>
         <div class="field full" style="display:flex;justify-content:flex-end;">
           <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> Save Settings</button>
         </div>
       </form>
     </div>`;
+
   $("settingsForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const payload = Object.fromEntries(fd.entries());
     payload.lastUpdated = serverTimestamp();
-    payload.updatedBy = currentAdmin.uid;
+    payload.updatedBy   = currentAdmin.uid;
+    payload.docId       = "global";
+
     try {
-      const ref = doc(db, "settings", "global");
-      const existing = await getDoc(ref);
-      if (existing.exists()) await updateDoc(ref, payload);
-      else await addDoc(collection(db, "settings"), { ...payload, docId: "global" });
-      toast("Settings saved"); await refreshAll();
+      // Always write back to the SAME doc that was loaded (default "global").
+      const ref = doc(db, "settings", cache.settingsId || "global");
+      await setDoc(ref, payload, { merge: true });
+      toast("Settings saved");
+      await refreshAll();
+      renderSettings();
     } catch (err) { toast("Error: " + err.message); }
   });
 }
